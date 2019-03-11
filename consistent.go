@@ -26,6 +26,8 @@ import (
 	"sort"
 	"strconv"
 	"sync"
+
+	"github.com/lvqian/mikuCluster/proxy/lineProtocol"
 )
 
 type uints []uint32
@@ -44,8 +46,8 @@ var ErrEmptyCircle = errors.New("empty circle")
 
 // Consistent holds the information about the members of the consistent hash circle.
 type Consistent struct {
-	circle           map[uint32]string
-	members          map[string]bool
+	circle           map[uint32]lineProtocol.WriteCloser
+	members          map[lineProtocol.WriteCloser]bool
 	sortedHashes     uints
 	NumberOfReplicas int
 	count            int64
@@ -59,59 +61,58 @@ type Consistent struct {
 func New() *Consistent {
 	c := new(Consistent)
 	c.NumberOfReplicas = 20
-	c.circle = make(map[uint32]string)
-	c.members = make(map[string]bool)
+	c.circle = make(map[uint32]lineProtocol.WriteCloser)
+	c.members = make(map[lineProtocol.WriteCloser]bool)
 	return c
 }
 
-// eltKey generates a string key for an element with an index.
-func (c *Consistent) eltKey(elt string, idx int) string {
-	// return elt + "|" + strconv.Itoa(idx)
-	return strconv.Itoa(idx) + elt
+// elementKey generates a string key for an element with an index.
+func (c *Consistent) elementKey(element lineProtocol.WriteCloser, index int) string {
+	return strconv.Itoa(index) + element.Name()
 }
 
 // Add inserts a string element in the consistent hash.
-func (c *Consistent) Add(elt string) {
+func (c *Consistent) Add(element lineProtocol.WriteCloser) {
 	c.Lock()
 	defer c.Unlock()
-	c.add(elt)
+	c.add(element)
 }
 
 // need c.Lock() before calling
-func (c *Consistent) add(elt string) {
+func (c *Consistent) add(element lineProtocol.WriteCloser) {
 	for i := 0; i < c.NumberOfReplicas; i++ {
-		c.circle[c.hashKey(c.eltKey(elt, i))] = elt
+		c.circle[c.hashKey(c.elementKey(element, i))] = element
 	}
-	c.members[elt] = true
+	c.members[element] = true
 	c.updateSortedHashes()
 	c.count++
 }
 
 // Remove removes an element from the hash.
-func (c *Consistent) Remove(elt string) {
+func (c *Consistent) Remove(element lineProtocol.WriteCloser) {
 	c.Lock()
 	defer c.Unlock()
-	c.remove(elt)
+	c.remove(element)
 }
 
 // need c.Lock() before calling
-func (c *Consistent) remove(elt string) {
+func (c *Consistent) remove(element lineProtocol.WriteCloser) {
 	for i := 0; i < c.NumberOfReplicas; i++ {
-		delete(c.circle, c.hashKey(c.eltKey(elt, i)))
+		delete(c.circle, c.hashKey(c.elementKey(element, i)))
 	}
-	delete(c.members, elt)
+	delete(c.members, element)
 	c.updateSortedHashes()
 	c.count--
 }
 
 // Set sets all the elements in the hash.  If there are existing elements not
-// present in elts, they will be removed.
-func (c *Consistent) Set(elts []string) {
+// present in elements, they will be removed.
+func (c *Consistent) Set(elements []lineProtocol.WriteCloser) {
 	c.Lock()
 	defer c.Unlock()
 	for k := range c.members {
 		found := false
-		for _, v := range elts {
+		for _, v := range elements {
 			if k == v {
 				found = true
 				break
@@ -121,7 +122,7 @@ func (c *Consistent) Set(elts []string) {
 			c.remove(k)
 		}
 	}
-	for _, v := range elts {
+	for _, v := range elements {
 		_, exists := c.members[v]
 		if exists {
 			continue
@@ -130,10 +131,10 @@ func (c *Consistent) Set(elts []string) {
 	}
 }
 
-func (c *Consistent) Members() []string {
+func (c *Consistent) Members() []lineProtocol.WriteCloser {
 	c.RLock()
 	defer c.RUnlock()
-	var m []string
+	var m []lineProtocol.WriteCloser
 	for k := range c.members {
 		m = append(m, k)
 	}
@@ -141,11 +142,11 @@ func (c *Consistent) Members() []string {
 }
 
 // Get returns an element close to where name hashes to in the circle.
-func (c *Consistent) Get(name string) (string, error) {
+func (c *Consistent) Get(name string) (lineProtocol.WriteCloser, error) {
 	c.RLock()
 	defer c.RUnlock()
 	if len(c.circle) == 0 {
-		return "", ErrEmptyCircle
+		return nil, ErrEmptyCircle
 	}
 	key := c.hashKey(name)
 	i := c.search(key)
@@ -164,22 +165,22 @@ func (c *Consistent) search(key uint32) (i int) {
 }
 
 // GetTwo returns the two closest distinct elements to the name input in the circle.
-func (c *Consistent) GetTwo(name string) (string, string, error) {
+func (c *Consistent) GetTwo(name string) (lineProtocol.WriteCloser, lineProtocol.WriteCloser, error) {
 	c.RLock()
 	defer c.RUnlock()
 	if len(c.circle) == 0 {
-		return "", "", ErrEmptyCircle
+		return nil, nil, ErrEmptyCircle
 	}
 	key := c.hashKey(name)
 	i := c.search(key)
 	a := c.circle[c.sortedHashes[i]]
 
 	if c.count == 1 {
-		return a, "", nil
+		return a, nil, nil
 	}
 
 	start := i
-	var b string
+	var b lineProtocol.WriteCloser
 	for i = start + 1; i != start; i++ {
 		if i >= len(c.sortedHashes) {
 			i = 0
@@ -193,7 +194,7 @@ func (c *Consistent) GetTwo(name string) (string, string, error) {
 }
 
 // GetN returns the N closest distinct elements to the name input in the circle.
-func (c *Consistent) GetN(name string, n int) ([]string, error) {
+func (c *Consistent) GetN(name string, n int) ([]lineProtocol.WriteCloser, error) {
 	c.RLock()
 	defer c.RUnlock()
 
@@ -209,7 +210,7 @@ func (c *Consistent) GetN(name string, n int) ([]string, error) {
 		key   = c.hashKey(name)
 		i     = c.search(key)
 		start = i
-		res   = make([]string, 0, n)
+		res   = make([]lineProtocol.WriteCloser, 0, n)
 		elem  = c.circle[c.sortedHashes[i]]
 	)
 
@@ -257,7 +258,7 @@ func (c *Consistent) updateSortedHashes() {
 	c.sortedHashes = hashes
 }
 
-func sliceContainsMember(set []string, member string) bool {
+func sliceContainsMember(set []lineProtocol.WriteCloser, member lineProtocol.WriteCloser) bool {
 	for _, m := range set {
 		if m == member {
 			return true
