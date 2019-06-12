@@ -27,7 +27,7 @@ import (
 	"strconv"
 	"sync"
 
-	"github.com/lvqian/mikuCluster/proxy/lineProtocol"
+	"code.devops.xiaohongshu.com/infra/mikuCluster/proxy/lineProtocol"
 )
 
 type uints []uint32
