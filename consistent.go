@@ -27,7 +27,7 @@ import (
 	"strconv"
 	"sync"
 
-	"code.devops.xiaohongshu.com/infra/mikuCluster/proxy/lineProtocol"
+	"code.devops.xiaohongshu.com/infra/chronos/proxy/lineProtocol"
 )
 
 type uints []uint32
